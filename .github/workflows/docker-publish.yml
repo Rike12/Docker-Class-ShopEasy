@@ -1,4 +1,4 @@
-name: Build, Push & Deploy ShopEasy
+name: Build, Push & GitOps Deploy ShopEasy
 
 on:
   push:
@@ -7,6 +7,7 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -23,6 +24,7 @@ jobs:
             -t ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-backend:${{ github.sha }} \
             -t ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-backend:latest \
             ./backend
+
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-backend:${{ github.sha }}
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-backend:latest
 
@@ -32,63 +34,34 @@ jobs:
             -t ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-frontend:${{ github.sha }} \
             -t ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-frontend:latest \
             ./frontend
+
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-frontend:${{ github.sha }}
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/shopeasy-frontend:latest
 
-  deploy:
+  update-gitops:
     needs: build-and-push
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
+      - name: Checkout GitOps repository
         uses: actions/checkout@v4
-
-      - name: Copy docker-compose.yml to server
-        uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          source: "docker-compose.yml"
-          target: "/opt/shopeasy"
+          repository: Rike12/shopeasy-gitops
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: shopeasy-gitops
 
-      - name: Write .env files & docker compose up
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          script: |
-            cd /opt/shopeasy
-            mkdir -p backend
+      - name: Update frontend image tag
+        run: |
+          cd shopeasy-gitops
 
-            # Root .env - read by docker-compose.yml
-            cat > .env <<EOF
-            DB_USER=${{ secrets.DB_USER }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            DB_NAME=${{ secrets.DB_NAME }}
-            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-            DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}
-            IMAGE_TAG=${{ github.sha }}
-            EOF
+          sed -i "s|image: .*shopeasy-frontend:.*|image: oluwademilade/shopeasy-frontend:${{ github.sha }}|" \
+            apps/shopeasy/frontend-blue.yaml
 
-            # backend/.env - read by the backend container
-            cat > backend/.env <<EOF
-            PORT=5000
-            NODE_ENV=production
-            CORS_ORIGIN=${{ secrets.CORS_ORIGIN }}
-            DB_HOST=postgres
-            DB_PORT=5432
-            DB_USER=${{ secrets.DB_USER }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            DB_NAME=${{ secrets.DB_NAME }}
-            REDIS_HOST=redis
-            REDIS_PORT=6379
-            REDIS_PASSWORD=${{ secrets.REDIS_PASSWORD }}
-            EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-            docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" -p "${{ secrets.DOCKERHUB_TOKEN }}"
-            docker compose pull
-            docker compose up -d
-            docker image prune -f
+          git add apps/shopeasy/frontend-blue.yaml
+
+          git commit -m "Update frontend image to ${{ github.sha }}"
+
+          git push origin main
